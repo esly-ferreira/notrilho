@@ -150,6 +150,27 @@ export default function Home() {
   const effectiveStation = manualStation ?? currentStation;
 
   useEffect(() => {
+    let cancelled = false;
+    fetch("/api/alerts")
+      .then((res) => res.json())
+      .then((list: { optionLabel: string; stationName: string | null; sentAt: string; lineId: string | null }[]) => {
+        if (cancelled || !Array.isArray(list)) return;
+        setAlertsSent(
+          list.map((a) => ({
+            optionLabel: a.optionLabel,
+            stationName: a.stationName,
+            sentAt: new Date(a.sentAt),
+            lineId: a.lineId,
+          }))
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (selectedLine === null || typeof window === "undefined") return;
     setStatus("loading");
     setCurrentStation(null);
@@ -588,8 +609,26 @@ export default function Home() {
         stations={stations}
         onSelectStation={(station) => setManualStation(station)}
         isStationFromLocation={!manualStation && !!currentStation}
-        onAlertSent={(optionLabel, stationName) => {
-          setAlertsSent((prev) => [...prev, { optionLabel, stationName, sentAt: new Date(), lineId: selectedLine ?? null }]);
+        onAlertSent={async (optionLabel, stationName) => {
+          const payload = { lineId: selectedLine ?? null, stationName, alertType: optionLabel };
+          try {
+            const res = await fetch("/api/alerts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            if (res.ok && data.sentAt) {
+              setAlertsSent((prev) => [
+                ...prev,
+                { optionLabel, stationName, sentAt: new Date(data.sentAt), lineId: selectedLine ?? null },
+              ]);
+            } else {
+              setAlertsSent((prev) => [...prev, { optionLabel, stationName, sentAt: new Date(), lineId: selectedLine ?? null }]);
+            }
+          } catch {
+            setAlertsSent((prev) => [...prev, { optionLabel, stationName, sentAt: new Date(), lineId: selectedLine ?? null }]);
+          }
         }}
       />
     </>
