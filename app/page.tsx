@@ -129,10 +129,17 @@ function formatTimeAgo(date: Date) {
   return `há ${h}h`;
 }
 
+//hora destravad
+// function isWithinAlertWindow(date: Date = new Date()) {
+//   const minutes = date.getHours() * 60 + date.getMinutes();
+//   const start = 4 * 60 + 40; // 04:40
+//   // Até 00:00 (fim do dia), ou seja, qualquer horário >= 04:40
+//   return minutes >= start;
+// }
+
 function isWithinAlertWindow(date: Date = new Date()) {
   const minutes = date.getHours() * 60 + date.getMinutes();
-  const start = 4 * 60 + 40; // 04:40
-  // Até 00:00 (fim do dia), ou seja, qualquer horário >= 04:40
+  const start = 2 * 60; // 02:00 (teste)
   return minutes >= start;
 }
 
