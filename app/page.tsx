@@ -137,10 +137,9 @@ function formatTimeAgo(date: Date) {
 //   return minutes >= start;
 // }
 
-function isWithinAlertWindow(date: Date = new Date()) {
-  const minutes = date.getHours() * 60 + date.getMinutes();
-  const start = 2 * 60; // 02:00 (teste)
-  return minutes >= start;
+function isWithinAlertWindow(_date: Date = new Date()) {
+  // Horário destravado temporariamente: permite alertas em qualquer hora do dia
+  return true;
 }
 
 const ALERT_TYPE_ICONS: Record<string, ReactNode> = {
