@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useEffect, useState, type ReactNode } from "react";
 import { FloatingAlertMenu } from "@/components/FloatingAlertMenu";
 import { LineDiagram } from "@/components/LineDiagram";
@@ -95,15 +94,16 @@ function getAlertCountsByStation(alerts: SentAlertRecord[], lineId: string | nul
 }
 
 function groupAlertsByTypeAndLine(alerts: SentAlertRecord[]) {
-  const groups: { lineId: string | null; optionLabel: string; count: number; stations: Record<string, number> }[] = [];
-  const seen = new Map<string, { count: number; stations: Record<string, number> }>();
+  const groups: { lineId: string | null; optionLabel: string; count: number; stations: Record<string, number>; latestSentAt: Date }[] = [];
+  const seen = new Map<string, { count: number; stations: Record<string, number>; latestSentAt: Date }>();
   for (const a of alerts) {
     const key = `${a.lineId ?? "outros"}|${a.optionLabel}`;
     if (!seen.has(key)) {
-      seen.set(key, { count: 0, stations: {} });
+      seen.set(key, { count: 0, stations: {}, latestSentAt: a.sentAt });
     }
     const g = seen.get(key)!;
     g.count += 1;
+    if (a.sentAt > g.latestSentAt) g.latestSentAt = a.sentAt;
     const sn = a.stationName ?? "Não informada";
     g.stations[sn] = (g.stations[sn] ?? 0) + 1;
   }
@@ -114,6 +114,7 @@ function groupAlertsByTypeAndLine(alerts: SentAlertRecord[]) {
       optionLabel,
       count: data.count,
       stations: data.stations,
+      latestSentAt: data.latestSentAt,
     });
   }
   return groups.sort((a, b) => b.count - a.count);
@@ -126,6 +127,13 @@ function formatTimeAgo(date: Date) {
   if (min < 60) return `há ${min} min`;
   const h = Math.floor(min / 60);
   return `há ${h}h`;
+}
+
+function isWithinAlertWindow(date: Date = new Date()) {
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  const start = 4 * 60 + 40; // 04:40
+  // Até 00:00 (fim do dia), ou seja, qualquer horário >= 04:40
+  return minutes >= start;
 }
 
 const ALERT_TYPE_ICONS: Record<string, ReactNode> = {
@@ -144,6 +152,11 @@ export default function Home() {
   const [alertsSent, setAlertsSent] = useState<SentAlertRecord[]>([]);
   const [showAlertCounts, setShowAlertCounts] = useState(false);
   const [notificationLineFilter, setNotificationLineFilter] = useState<string>("all");
+  const [toast, setToast] = useState<{ type: "info" | "error"; message: string } | null>(null);
+  const [pendingAlerts, setPendingAlerts] = useState<
+    { optionLabel: string; stationName: string | null; lineId: string | null }[]
+  >([]);
+  const [bellHighlight, setBellHighlight] = useState(false);
 
   const lineConfig = LINES.find((l) => l.id === selectedLine);
   const stations = lineConfig?.stations ?? LINE_7_STATIONS;
@@ -169,6 +182,88 @@ export default function Home() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const audio = new Audio("/images/sounds/bell.mp3");
+      audio.volume = 0.5;
+      void audio.play().catch(() => {});
+    } catch {
+      // ignora erro de áudio
+    }
+    setBellHighlight(true);
+    const id = setTimeout(() => setBellHighlight(false), 1200);
+    return () => clearTimeout(id);
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!toast || toast.type !== "error") return;
+    try {
+      const audio = new Audio("/sounds/error.mp3");
+      audio.volume = 0.6;
+      void audio.play().catch(() => {});
+    } catch {
+      // ignora erro de áudio
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOnline = async () => {
+      if (pendingAlerts.length === 0) return;
+      const toSend = [...pendingAlerts];
+      setPendingAlerts([]);
+      setToast({
+        type: "info",
+        message: `Sua conexão voltou. Enviando ${toSend.length} alerta(s) pendente(s).`,
+      });
+      for (const pending of toSend) {
+        try {
+          await fetch("/api/alerts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              lineId: pending.lineId,
+              stationName: pending.stationName,
+              alertType: pending.optionLabel,
+            }),
+          });
+        } catch {
+          // se falhar de novo, recoloca o restante na fila e para
+          setPendingAlerts((prev) => [...prev, pending, ...toSend.slice(toSend.indexOf(pending) + 1)]);
+          break;
+        }
+      }
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [pendingAlerts]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handlePopState = () => {
+      if (selectedLine !== null) {
+        setSelectedLine(null);
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [selectedLine]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (selectedLine !== null) {
+      window.history.pushState({ selectedLine }, "", window.location.href);
+    }
+  }, [selectedLine]);
 
   useEffect(() => {
     if (selectedLine === null || typeof window === "undefined") return;
@@ -210,18 +305,14 @@ export default function Home() {
     return (
       <main className="min-h-screen flex flex-col items-center px-4 py-8 overflow-x-hidden bg-white">
         <header className="w-full max-w-md flex justify-start mb-4">
-          <Image
-            src="/images/logo.png"
-            alt="Notrilho"
-            width={140}
-            height={80}
-            className="object-contain h-16 w-auto"
-            priority
-          />
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900">
+            Notrilho
+          </h1>
         </header>
         {alertsSent.length > 0 && (
           <section className="w-full max-w-md mb-6 flex flex-col min-h-0 max-h-[50vh]">
-            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3 shrink-0">Notificações</h3>
+            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1 shrink-0">Notificações</h3>
+            <p className="text-xs text-zinc-400 mb-3 shrink-0">Alertas da última hora</p>
             <div className="flex flex-wrap gap-1.5 mb-3 shrink-0">
               <button
                 type="button"
@@ -257,21 +348,24 @@ export default function Home() {
             <div className="space-y-2 overflow-y-auto min-h-0 flex-1 pr-1">
               {(() => {
                 if (notificationLineFilter === "all") {
-                  const byLineAndType: { lineId: string | null; optionLabel: string; count: number }[] = [];
-                  const seen = new Map<string, number>();
+                  const seen = new Map<string, { count: number; latestSentAt: Date }>();
                   for (const a of alertsSent) {
                     const key = `${a.lineId ?? "outros"}|${a.optionLabel}`;
-                    seen.set(key, (seen.get(key) ?? 0) + 1);
+                    const prev = seen.get(key);
+                    const latest = !prev || a.sentAt > prev.latestSentAt ? a.sentAt : prev.latestSentAt;
+                    seen.set(key, { count: (prev?.count ?? 0) + 1, latestSentAt: latest });
                   }
-                  for (const [key, count] of Array.from(seen.entries())) {
-                    const [lineId, optionLabel] = key.split("|");
-                    byLineAndType.push({
-                      lineId: lineId === "outros" ? null : lineId,
-                      optionLabel,
-                      count,
-                    });
-                  }
-                  byLineAndType.sort((a, b) => b.count - a.count);
+                  const byLineAndType = Array.from(seen.entries())
+                    .map(([key, { count, latestSentAt }]) => {
+                      const [lineId, optionLabel] = key.split("|");
+                      return {
+                        lineId: lineId === "outros" ? null : lineId,
+                        optionLabel,
+                        count,
+                        latestSentAt,
+                      };
+                    })
+                    .sort((a, b) => b.count - a.count);
                   if (byLineAndType.length === 0) {
                     return (
                       <p className="text-zinc-500 text-sm py-4 text-center">
@@ -279,7 +373,7 @@ export default function Home() {
                       </p>
                     );
                   }
-                  return byLineAndType.map(({ lineId, optionLabel, count }, i) => {
+                  return byLineAndType.map(({ lineId, optionLabel, count, latestSentAt }, i) => {
                     const line = lineId ? LINES.find((l) => l.id === lineId) : null;
                     const cardColor = line?.color ?? "#71717a";
                     return (
@@ -301,6 +395,9 @@ export default function Home() {
                           <p className="text-xs text-zinc-500">
                             {line ? `Linha ${line.badge} · ` : ""}{count} {count === 1 ? "relato" : "relatos"}
                           </p>
+                          <p className="text-xs text-zinc-400 mt-0.5">
+                            Último: {formatTimeAgo(latestSentAt)}
+                          </p>
                         </div>
                       </div>
                     );
@@ -320,8 +417,15 @@ export default function Home() {
                 }
                 const line = LINES.find((l) => l.id === notificationLineFilter);
                 const cardColor = line?.color ?? "#A61361";
+                const latestByType = new Map<string, Date>();
+                for (const a of filtered) {
+                  if (a.optionLabel && (!latestByType.has(a.optionLabel) || a.sentAt > latestByType.get(a.optionLabel)!)) {
+                    latestByType.set(a.optionLabel, a.sentAt);
+                  }
+                }
                 return typesWithCount.map((key) => {
                   const count = byType[key] ?? 0;
+                  const latest = latestByType.get(key);
                   return (
                     <div
                       key={key}
@@ -341,6 +445,11 @@ export default function Home() {
                         <p className="text-xs text-zinc-500">
                           {count} {count === 1 ? "relato" : "relatos"}
                         </p>
+                        {latest && (
+                          <p className="text-xs text-zinc-400 mt-0.5">
+                            Último: {formatTimeAgo(latest)}
+                          </p>
+                        )}
                       </div>
                     </div>
                   );
@@ -402,17 +511,73 @@ export default function Home() {
         className="fixed top-4 left-4 z-50 flex items-center gap-2 rounded-xl border border-zinc-300 bg-white/90 backdrop-blur-xl px-4 py-2.5 text-sm font-medium text-zinc-700 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.1)] hover:bg-zinc-50"
         aria-label="Voltar para seleção de linha"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-5 w-5 shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M19 12H5M12 19l-7-7 7-7" />
+        </svg>
         <span className="hidden sm:inline">Voltar</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setShowAlertCounts(true)}
+        className="fixed top-4 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-zinc-300 bg-white/95 backdrop-blur-xl px-3 py-1.5 text-[0.7rem] sm:text-xs font-medium text-zinc-700 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.1)] hover:bg-zinc-50 max-w-[90vw]"
+      >
+        {(() => {
+          const alertsForCurrentLine = selectedLine
+            ? alertsSent.filter((a) => a.lineId === selectedLine)
+            : alertsSent;
+          if (alertsForCurrentLine.length === 0) {
+            return (
+              <span className="block text-center">
+                Nenhum alerta registrado ainda
+              </span>
+            );
+          }
+          const latest = alertsForCurrentLine.reduce(
+            (max, a) => (a.sentAt > max ? a.sentAt : max),
+            alertsForCurrentLine[0].sentAt
+          );
+          return (
+            <span className="block text-center">
+              Últimos alertas · {formatTimeAgo(latest)}
+            </span>
+          );
+        })()}
       </button>
       <button
         type="button"
         onClick={() => setShowAlertCounts(true)}
         className="fixed top-4 right-4 z-50 flex items-center gap-2 rounded-xl border border-zinc-300 bg-white/90 backdrop-blur-xl px-4 py-2.5 text-sm font-medium text-zinc-700 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.1)] hover:bg-zinc-50"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" style={{ color: lineConfig?.color ?? "#A61361" }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
-        <span className="font-bold" style={{ color: lineConfig?.color ?? "#A61361" }}>{alertsSent.length}</span>
-        <span className="hidden sm:inline">{alertsSent.length === 1 ? "vez alertada" : "vezes alertada"}</span>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className={`h-5 w-5 shrink-0 ${bellHighlight ? "animate-bounce" : ""}`}
+          style={{ color: lineConfig?.color ?? "#A61361" }}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+        </svg>
+        <span
+          className="font-bold"
+          style={{ color: lineConfig?.color ?? "#A61361" }}
+        >
+          {alertsSent.length}
+        </span>
+        <span className="hidden sm:inline">
+          {alertsSent.length === 1 ? "vez alertada" : "vezes alertada"}
+        </span>
       </button>
 
       {showAlertCounts && (() => {
@@ -427,7 +592,7 @@ export default function Home() {
                 </span>
                 <div>
                   <h2 className="text-lg font-bold text-zinc-900 leading-tight">Status dos alertas</h2>
-                  <p className="text-xs text-zinc-500">Resumo desta sessão</p>
+                  <p className="text-xs text-zinc-500">Alertas da última hora</p>
                 </div>
               </div>
               <button type="button" onClick={() => setShowAlertCounts(false)} className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100" aria-label="Fechar">
@@ -447,6 +612,8 @@ export default function Home() {
                     <div className="space-y-3">
                       {(["LOTADO", "TREM PARADO", "ATRASO", "NORMAL"] as const).map((key) => {
                         const count = countByType(alertsForCurrentLine)[key] ?? 0;
+                        const typeAlerts = alertsForCurrentLine.filter((a) => a.optionLabel === key);
+                        const latestSentAt = typeAlerts.length > 0 ? typeAlerts.reduce((max, a) => (a.sentAt > max ? a.sentAt : max), typeAlerts[0].sentAt) : null;
                         const msg = ALERT_STATUS_MESSAGE[key];
                         const hasReports = count > 0;
                         const lineColor = lineConfig?.color ?? "#A61361";
@@ -472,6 +639,9 @@ export default function Home() {
                                 <p className="mt-2 text-lg font-bold tabular-nums" style={{ color: hasReports ? lineColor : undefined }}>
                                   {count} {count === 1 ? "relato" : "relatos"}
                                 </p>
+                                {hasReports && latestSentAt && (
+                                  <p className="text-xs text-zinc-500 mt-1">Último: {formatTimeAgo(latestSentAt)}</p>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -520,6 +690,7 @@ export default function Home() {
                                   <span className="text-xs text-zinc-500">
                                     {group.count} {group.count === 1 ? "relato" : "relatos"}
                                   </span>
+                                  <span className="text-xs text-zinc-400">· Último: {formatTimeAgo(group.latestSentAt)}</span>
                                 </div>
                                 <p className="font-semibold text-zinc-900 text-sm mb-0.5">
                                   {ALERT_LABELS[group.optionLabel] ?? group.optionLabel}
@@ -546,20 +717,9 @@ export default function Home() {
       })()}
 
       <main className="min-h-screen flex flex-col items-center px-4 pt-8 pb-28 md:pt-12 md:pb-32 overflow-x-hidden">
-        <div className="w-full max-w-3xl flex flex-col items-center min-w-0">
-          <header className="w-full flex justify-center mb-6">
-            <Image
-              src="/images/logo.png"
-              alt="Notrilho"
-              width={140}
-              height={80}
-              className="object-contain h-16 w-auto"
-              priority
-            />
-          </header>
-
+        <div className="w-full max-w-3xl flex flex-col items-center min-w-0 pt-16">
           <div className="w-full rounded-3xl border border-white/70 bg-white/55 backdrop-blur-xl shadow-[0_18px_60px_-30px_rgba(0,0,0,0.2)] ring-1 ring-zinc-900/5 p-5 md:p-7">
-            <h2 className="flex items-center gap-2 text-2xl md:text-4xl font-bold text-left mb-6 tracking-tight" style={{ color: lineConfig?.color ?? "#A61361" }}>
+            <h2 className="flex items-center gap-2 text-2xl md:text-4xl font-bold text-left mb-2 tracking-tight" style={{ color: lineConfig?.color ?? "#A61361" }}>
               <span className="inline-flex items-center justify-center w-[1em] h-[1em] rounded-[0.2em] text-white font-bold shrink-0 text-[0.7em] leading-none" style={{ backgroundColor: lineConfig?.color ?? "#A61361" }}>{lineConfig?.badge ?? "7"}</span>
               {lineConfig?.label ?? "Linha 7 Rubi"}
             </h2>
@@ -610,7 +770,40 @@ export default function Home() {
         onSelectStation={(station) => setManualStation(station)}
         isStationFromLocation={!manualStation && !!currentStation}
         onAlertSent={async (optionLabel, stationName) => {
+          if (!isWithinAlertWindow()) {
+            setToast({
+              type: "error",
+              message:
+                "Os alertas só podem ser enviados entre 04:40 e 00:00, quando a estação está aberta.",
+            });
+            return;
+          }
           const payload = { lineId: selectedLine ?? null, stationName, alertType: optionLabel };
+          if (typeof window !== "undefined" && !window.navigator.onLine) {
+            setPendingAlerts((prev) => [
+              ...prev,
+              {
+                optionLabel,
+                stationName: stationName ?? null,
+                lineId: selectedLine ?? null,
+              },
+            ]);
+            setAlertsSent((prev) => [
+              ...prev,
+              {
+                optionLabel,
+                stationName,
+                sentAt: new Date(),
+                lineId: selectedLine ?? null,
+              },
+            ]);
+            setToast({
+              type: "info",
+              message:
+                "Você está sem internet. Assim que a conexão voltar, seu alerta será enviado.",
+            });
+            return;
+          }
           try {
             const res = await fetch("/api/alerts", {
               method: "POST",
@@ -618,6 +811,13 @@ export default function Home() {
               body: JSON.stringify(payload),
             });
             const data = await res.json();
+            if (res.status === 429) {
+              setToast({
+                type: "error",
+                message: data.error ?? "Aguarde 10 minutos para enviar outro alerta.",
+              });
+              return;
+            }
             if (res.ok && data.sentAt) {
               setAlertsSent((prev) => [
                 ...prev,
@@ -627,10 +827,80 @@ export default function Home() {
               setAlertsSent((prev) => [...prev, { optionLabel, stationName, sentAt: new Date(), lineId: selectedLine ?? null }]);
             }
           } catch {
-            setAlertsSent((prev) => [...prev, { optionLabel, stationName, sentAt: new Date(), lineId: selectedLine ?? null }]);
+            if (typeof window !== "undefined" && !window.navigator.onLine) {
+              setPendingAlerts((prev) => [
+                ...prev,
+                {
+                  optionLabel,
+                  stationName: stationName ?? null,
+                  lineId: selectedLine ?? null,
+                },
+              ]);
+              setToast({
+                type: "info",
+                message:
+                  "Você está sem internet. Assim que a conexão voltar, seu alerta será enviado.",
+              });
+            } else {
+              setToast({
+                type: "error",
+                message:
+                  "Não foi possível enviar o alerta agora. Tente novamente em instantes.",
+              });
+            }
+            setAlertsSent((prev) => [
+              ...prev,
+              { optionLabel, stationName, sentAt: new Date(), lineId: selectedLine ?? null },
+            ]);
           }
         }}
       />
+      {toast && (
+        <div className="fixed top-4 inset-x-0 z-[80] px-3">
+          <div
+            className={`mx-auto max-w-md flex items-center gap-3 rounded-2xl border px-4 py-3 shadow-xl text-sm ${
+              toast.type === "error"
+                ? "bg-red-600 text-white border-red-700"
+                : "bg-zinc-900 text-white border-zinc-700"
+            }`}
+          >
+            <span className="hidden xs:flex h-7 w-7 items-center justify-center rounded-full bg-black/10 border border-white/20">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 8v5" />
+                <path d="M12 16h.01" />
+              </svg>
+            </span>
+            <span className="flex-1 text-xs sm:text-sm leading-snug">
+              {toast.message}
+            </span>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="rounded-full p-1 hover:bg-black/20 transition-colors"
+              aria-label="Fechar aviso"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

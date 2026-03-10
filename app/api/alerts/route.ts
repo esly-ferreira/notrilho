@@ -25,18 +25,35 @@ function toResponse(row: AlertRow): AlertResponse {
   };
 }
 
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+
+function getClientIp(request: NextRequest): string | null {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) {
+    const first = forwarded.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) return realIp;
+  return null;
+}
+
 /**
  * GET /api/alerts
- * Lista alertas. Query: ?lineId=line-7 para filtrar por linha.
+ * Lista alertas da última 1 hora. Query: ?lineId=line-7 para filtrar por linha.
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const lineId = searchParams.get("lineId");
 
+    const oneHourAgo = new Date(Date.now() - ONE_HOUR_MS).toISOString();
+
     let query = supabase
       .from("alerts")
       .select("id, line_id, station_name, alert_type, created_at")
+      .gte("created_at", oneHourAgo)
       .order("created_at", { ascending: false });
 
     if (lineId) {
@@ -67,9 +84,11 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/alerts
  * Body: { lineId?: string | null, stationName?: string | null, alertType: string }
+ * Limite: 1 alerta por IP a cada 10 minutos.
  */
 export async function POST(request: NextRequest) {
   try {
+    const ip = getClientIp(request);
     const body = await request.json();
     const lineId = body.lineId ?? null;
     const stationName = body.stationName ?? null;
@@ -82,12 +101,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (ip) {
+      const tenMinAgo = new Date(Date.now() - TEN_MINUTES_MS).toISOString();
+      const { data: recent } = await supabase
+        .from("alerts")
+        .select("id")
+        .eq("ip_address", ip)
+        .gte("created_at", tenMinAgo)
+        .limit(1);
+
+      if (recent && recent.length > 0) {
+        return NextResponse.json(
+          { error: "Aguarde 10 minutos para enviar outro alerta." },
+          { status: 429 }
+        );
+      }
+    }
+
     const { data, error } = await supabase
       .from("alerts")
       .insert({
         line_id: lineId,
         station_name: stationName,
         alert_type: alertType,
+        ip_address: ip,
       })
       .select("id, line_id, station_name, alert_type, created_at")
       .single();
