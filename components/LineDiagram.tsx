@@ -44,56 +44,75 @@ export function LineDiagram({
     <React.Fragment>
       {popupStation && stationData && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-2xl"
           onClick={() => setPopupStation(null)}
         >
           <div
-            className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white shadow-xl p-5"
+            className="relative z-[10000] w-full max-w-sm rounded-2xl border border-zinc-200/80 bg-white shadow-2xl overflow-hidden ring-4 ring-white/20"
+            style={{ boxShadow: "0 25px 50px -12px rgba(0,0,0,0.4)" }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-zinc-900">
-                {popupStation.name}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setPopupStation(null)}
-                className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100"
-                aria-label="Fechar"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
+            <div
+              className="px-5 pt-5 pb-4"
+              style={{ borderBottom: `3px solid ${lineColor}` }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-xl font-bold text-zinc-900 leading-tight">
+                    {popupStation.name}
+                  </h3>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    {stationData.total}{" "}
+                    {stationData.total === 1 ? "alerta" : "alertas"} nesta estação
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPopupStation(null)}
+                  className="shrink-0 rounded-xl p-2 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors"
+                  aria-label="Fechar"
                 >
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-5 w-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <p className="text-sm text-zinc-600 mb-4">
-              {stationData.total}{" "}
-              {stationData.total === 1 ? "alerta" : "alertas"} nesta estação
-            </p>
-            <ul className="space-y-2">
+            <ul className="p-4 space-y-2">
               {Object.entries(stationData.byType)
                 .filter(([, n]) => n > 0)
                 .map(([type, count]) => (
                   <li
                     key={type}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-zinc-50/50 px-4 py-2.5"
+                    className="flex items-center justify-between gap-3 rounded-xl px-4 py-3 transition-colors"
+                    style={{
+                      backgroundColor: hexToRgba(lineColor, 0.08),
+                      borderLeft: `4px solid ${lineColor}`,
+                    }}
                   >
-                    <span className="flex items-center gap-2 text-sm font-medium text-zinc-800">
-                      <span style={{ color: lineColor }}>
-                        {alertTypeIcons[type]}
+                    <span className="flex items-center gap-3 text-sm font-semibold text-zinc-800">
+                      <span
+                        className="flex h-9 w-9 items-center justify-center rounded-lg"
+                        style={{ backgroundColor: hexToRgba(lineColor, 0.2) }}
+                      >
+                        <span style={{ color: lineColor }}>
+                          {alertTypeIcons[type]}
+                        </span>
                       </span>
                       {alertLabels[type] ?? type}
                     </span>
                     <span
-                      className="font-bold tabular-nums text-sm"
-                      style={{ color: lineColor }}
+                      className="flex h-8 min-w-[2rem] items-center justify-center rounded-lg px-2 font-bold tabular-nums text-sm text-white"
+                      style={{ backgroundColor: lineColor }}
                     >
                       {count}
                     </span>

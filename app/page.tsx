@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { useFooterVisibility } from "@/app/FooterVisibilityProvider";
 import { FloatingAlertMenu } from "@/components/FloatingAlertMenu";
 import { LineDiagram } from "@/components/LineDiagram";
 import { LINE_7_STATIONS, LINE_8_STATIONS, LINE_9_STATIONS, LINE_10_STATIONS, LINE_11_STATIONS, LINE_12_STATIONS, LINE_13_STATIONS } from "@/lib/stations";
@@ -15,6 +16,9 @@ export type SentAlertRecord = {
   sentAt: Date;
   lineId?: string | null;
 };
+
+/** Cache em memória: evita nova requisição ao trocar de tela; só busca de novo ao atualizar a página. */
+let alertsCache: SentAlertRecord[] | null = null;
 
 const LINES = [
   { id: "line-7", name: "Linha 7 Rubi", color: "#A61361", badge: "7", label: "Linha 7 Rubi", stations: LINE_7_STATIONS, description: "Jundiaí a Barra Funda", stat: `${LINE_7_STATIONS.length} estações` },
@@ -142,6 +146,15 @@ function isWithinAlertWindow(_date: Date = new Date()) {
   return true;
 }
 
+function LoadingScreen() {
+  return (
+    <main className="min-h-screen flex flex-col items-center justify-center px-4 bg-white">
+      <div className="w-12 h-12 border-4 border-zinc-200 border-t-zinc-700 rounded-full animate-spin" />
+      <p className="mt-4 text-sm font-medium text-zinc-600">Carregando...</p>
+    </main>
+  );
+}
+
 const ALERT_TYPE_ICONS: Record<string, ReactNode> = {
   LOTADO: <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>,
   "TREM PARADO": <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>,
@@ -163,31 +176,83 @@ export default function Home() {
     { optionLabel: string; stationName: string | null; lineId: string | null }[]
   >([]);
   const [bellHighlight, setBellHighlight] = useState(false);
+  const [initialDataReady, setInitialDataReady] = useState(false);
+  const [refreshingAlerts, setRefreshingAlerts] = useState(false);
 
   const lineConfig = LINES.find((l) => l.id === selectedLine);
   const stations = lineConfig?.stations ?? LINE_7_STATIONS;
   const effectiveStation = manualStation ?? currentStation;
+  const { setHideFooter } = useFooterVisibility();
+
+  useEffect(() => {
+    setHideFooter(selectedLine !== null);
+    return () => setHideFooter(false);
+  }, [selectedLine, setHideFooter]);
 
   useEffect(() => {
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const minDelay = 400;
+    const start = Date.now();
+    const markReady = () => {
+      if (cancelled) return;
+      const elapsed = Date.now() - start;
+      const remaining = Math.max(0, minDelay - elapsed);
+      timeoutId = setTimeout(() => setInitialDataReady(true), remaining);
+    };
+
+    if (alertsCache !== null) {
+      setAlertsSent(alertsCache);
+      markReady();
+      return () => {
+        cancelled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+    }
+
     fetch("/api/alerts")
       .then((res) => res.json())
       .then((list: { optionLabel: string; stationName: string | null; sentAt: string; lineId: string | null }[]) => {
         if (cancelled || !Array.isArray(list)) return;
-        setAlertsSent(
-          list.map((a) => ({
-            optionLabel: a.optionLabel,
-            stationName: a.stationName,
-            sentAt: new Date(a.sentAt),
-            lineId: a.lineId,
-          }))
-        );
+        const mapped = list.map((a) => ({
+          optionLabel: a.optionLabel,
+          stationName: a.stationName,
+          sentAt: new Date(a.sentAt),
+          lineId: a.lineId,
+        }));
+        setAlertsSent(mapped);
+        alertsCache = mapped;
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(markReady);
     return () => {
       cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, []);
+
+  useEffect(() => {
+    if (alertsSent.length > 0) alertsCache = alertsSent;
+  }, [alertsSent]);
+
+  const refreshAlerts = () => {
+    setRefreshingAlerts(true);
+    fetch("/api/alerts")
+      .then((res) => res.json())
+      .then((list: { optionLabel: string; stationName: string | null; sentAt: string; lineId: string | null }[]) => {
+        if (!Array.isArray(list)) return;
+        const mapped = list.map((a) => ({
+          optionLabel: a.optionLabel,
+          stationName: a.stationName,
+          sentAt: new Date(a.sentAt),
+          lineId: a.lineId,
+        }));
+        setAlertsSent(mapped);
+        alertsCache = mapped;
+      })
+      .catch(() => {})
+      .finally(() => setRefreshingAlerts(false));
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -308,12 +373,38 @@ export default function Home() {
   }, [selectedLine]);
 
   if (selectedLine === null) {
+    if (!initialDataReady) {
+      return <LoadingScreen />;
+    }
     return (
       <main className="min-h-screen flex flex-col items-center px-4 py-8 overflow-x-hidden bg-white">
-        <header className="w-full max-w-md flex justify-start mb-4">
+        <header className="w-full max-w-md flex items-center justify-between gap-3 mb-4">
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900">
             Notrilho
           </h1>
+          <button
+            type="button"
+            onClick={refreshAlerts}
+            disabled={refreshingAlerts}
+            className="shrink-0 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 shadow-sm hover:bg-zinc-50 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {refreshingAlerts ? (
+              <>
+                <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-zinc-300 border-t-zinc-600 animate-spin" />
+                Atualizando...
+              </>
+            ) : (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                  <path d="M3 3v5h5" />
+                  <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                  <path d="M16 21h5v-5" />
+                </svg>
+                Atualizar
+              </>
+            )}
+          </button>
         </header>
         {alertsSent.length > 0 && (
           <section className="w-full max-w-md mb-6 flex flex-col min-h-0 max-h-[50vh]">
@@ -507,6 +598,10 @@ export default function Home() {
         </div>
       </main>
     );
+  }
+
+  if (status === "loading") {
+    return <LoadingScreen />;
   }
 
   return (
@@ -723,19 +818,12 @@ export default function Home() {
       })()}
 
       <main className="min-h-screen flex flex-col items-center px-4 pt-8 pb-28 md:pt-12 md:pb-32 overflow-x-hidden">
-        <div className="w-full max-w-3xl flex flex-col items-center min-w-0 pt-16">
+        <div className="w-full max-w-3xl flex flex-col items-center min-w-0 pt-12">
           <div className="w-full rounded-3xl border border-white/70 bg-white/55 backdrop-blur-xl shadow-[0_18px_60px_-30px_rgba(0,0,0,0.2)] ring-1 ring-zinc-900/5 p-5 md:p-7">
             <h2 className="flex items-center gap-2 text-2xl md:text-4xl font-bold text-left mb-2 tracking-tight" style={{ color: lineConfig?.color ?? "#A61361" }}>
               <span className="inline-flex items-center justify-center w-[1em] h-[1em] rounded-[0.2em] text-white font-bold shrink-0 text-[0.7em] leading-none" style={{ backgroundColor: lineConfig?.color ?? "#A61361" }}>{lineConfig?.badge ?? "7"}</span>
               {lineConfig?.label ?? "Linha 7 Rubi"}
             </h2>
-
-            {status === "loading" && (
-              <div className="flex flex-col items-center gap-4 py-8">
-                <div className="w-10 h-10 border-2 rounded-full animate-spin" style={{ borderColor: `${lineConfig?.color ?? "#A61361"}30`, borderTopColor: lineConfig?.color ?? "#A61361" }} />
-                <p className="text-zinc-700 text-sm">Obtendo sua localização...</p>
-              </div>
-            )}
 
             {(status === "error" || status === "denied") && (
               <div className="flex flex-col items-center gap-2 py-6 text-center">
